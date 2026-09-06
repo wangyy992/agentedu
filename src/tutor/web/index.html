@@ -82,12 +82,14 @@
   <!-- 1. 导入材料 -->
   <section class="card" id="ingestCard">
     <h2>① 导入学习材料</h2>
-    <textarea id="materialText" placeholder="粘贴一段讲义 / 文章,或在下方填服务器上的文件路径(支持 .md .txt .html .pdf)"></textarea>
+    <textarea id="materialText" placeholder="粘贴一段讲义 / 文章(纯文本或 Markdown)"></textarea>
     <div class="row">
-      <input type="text" id="materialPath" placeholder="examples/gradient_descent.md" style="flex:1;min-width:220px">
       <button id="btnIngest">解析材料</button>
+      <span class="muted">或试试内置示例:</span>
+      <span id="exampleBtns"></span>
       <span class="muted" id="ingestMsg"></span>
     </div>
+    <div class="muted" id="limitHint" style="margin-top:8px"></div>
   </section>
 
   <!-- 2. 知识图谱与路径 -->
@@ -140,24 +142,48 @@ async function api(path, opts){
 const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const busy = (el, on, label) => { el.disabled = on; el.innerHTML = on ? '<span class="spin"></span> 处理中' : label; };
 
-fetch('/api/health').then(r=>r.json()).then(d=>{
-  $('#llmKind').textContent = d.llm === 'FakeLLM' ? '· 当前为离线假模型(无 API Key)' : '· 已接入 Claude';
-}).catch(()=>{});
+let LIMITS = {max_material_chars: 20000};
+
+function renderHealth(d){
+  LIMITS = d;
+  const degraded = d.budget && d.budget.exhausted;
+  $('#llmKind').textContent = degraded
+    ? '· 今日演示额度已用完,已降级为离线模型(内容质量下降,流程照常)'
+    : (d.llm === 'FakeLLM' ? '· 当前为离线假模型(无 API Key)' : '· 已接入 Claude');
+  $('#limitHint').textContent =
+    `材料长度上限 ${d.max_material_chars} 字` +
+    (d.budget && d.budget.limit ? `,今日演示额度 ${d.budget.used}/${d.budget.limit}` : '');
+  $('#exampleBtns').innerHTML = (d.examples||[])
+    .map(n=>`<button class="ghost" data-example="${esc(n)}" style="margin-right:6px">${esc(n)}</button>`).join('');
+  document.querySelectorAll('[data-example]').forEach(b=>{
+    b.onclick = () => doIngest({example: b.dataset.example});
+  });
+}
+fetch('/api/health').then(r=>r.json()).then(renderHealth).catch(()=>{});
 
 // ① 解析材料
-$('#btnIngest').onclick = async () => {
-  const text = $('#materialText').value.trim(), path = $('#materialPath').value.trim();
-  if(!text && !path){ $('#ingestMsg').textContent = '请粘贴内容或填写路径'; return; }
+async function doIngest(payload){
   busy($('#btnIngest'), true);
   $('#ingestMsg').textContent = '正在理解材料并建立知识图谱…';
   try{
-    const d = await api('/api/materials', {method:'POST',
-      body: JSON.stringify({text, path, title: path ? path.split('/').pop() : '粘贴的材料'})});
+    const d = await api('/api/materials', {method:'POST', body: JSON.stringify(payload)});
     materialId = d.material_id;
     $('#ingestMsg').textContent = `已解析:${d.chunks} 个片段,${d.concepts.length} 个知识点`;
     renderPlan(d);
+    fetch('/api/health').then(r=>r.json()).then(renderHealth).catch(()=>{});
   }catch(e){ $('#ingestMsg').textContent = '失败:' + e.message; }
   busy($('#btnIngest'), false, '解析材料');
+}
+
+$('#btnIngest').onclick = () => {
+  const text = $('#materialText').value.trim();
+  if(!text){ $('#ingestMsg').textContent = '请粘贴材料内容,或点右边的内置示例'; return; }
+  if(text.length > LIMITS.max_material_chars){
+    $('#ingestMsg').textContent =
+      `材料 ${text.length} 字,超过上限 ${LIMITS.max_material_chars} 字。本地运行不受此限。`;
+    return;
+  }
+  doIngest({text, title: '粘贴的材料'});
 };
 
 function renderPlan(d){

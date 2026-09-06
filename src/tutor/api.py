@@ -10,25 +10,32 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import guardrails as g
+from .examples import example_path, list_examples
+from .llm import FakeLLM, build_llm
 from .schemas import ActionType
 from .service import TutorService
 
 app = FastAPI(title="AI 自适应辅导 Agent", version="0.1.0")
 service = TutorService()
 
-WEB_DIR = Path(__file__).resolve().parents[2] / "web"
+# 超出每日预算时切过去的离线兜底模型:演示站宁可效果变差,也不要看起来挂了
+_fallback_llm = FakeLLM()
+
+WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
 # --- 请求体 -------------------------------------------------------------
 class IngestBody(BaseModel):
     title: str = "未命名材料"
     text: str = ""
-    path: str = ""
+    path: str = ""       # 服务器本地路径。演示模式下被拒绝(见 guardrails)
+    example: str = ""    # 内置示例名,如 "gradient_descent"
 
 
 class AnswerBody(BaseModel):
@@ -81,10 +88,47 @@ def _progress(tutor) -> list[dict[str, Any]]:
     ]
 
 
+# --- 护栏 ---------------------------------------------------------------
+def _guard(request: Request, limiter: g.SlidingWindow | None = None):
+    """每个会花钱的路由都先过这里:限流 + 按预算决定用哪个模型。
+
+    返回 (生效的模型, 调用前的计数),配合 _spend() 记账。
+    """
+    key = g.client_key(request)
+    try:
+        g.request_limiter.check(key)
+        if limiter is not None:
+            limiter.check(key)
+    except g.RateLimitExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc),
+                            headers={"Retry-After": str(exc.retry_after)}) from exc
+
+    # 预算用尽 -> 降级到离线模型。请求照常成功,只是内容质量下降:
+    # 演示站宁可效果变差,也不要看起来挂了。
+    llm = service.set_degraded(g.budget.exhausted(), _fallback_llm)
+    return llm, llm.usage.calls
+
+
+def _spend(llm, before: int) -> None:
+    """记录本次请求真实消耗的模型调用数。
+
+    必须用 _guard 返回的那个 llm 对象,而不是重新读 service.llm——
+    并发请求下后者可能已被另一个请求换成了兜底模型,差值会算错。
+    """
+    g.budget.record(max(0, llm.usage.calls - before))
+
+
 # --- 路由 ---------------------------------------------------------------
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "llm": type(service.llm).__name__}
+    return {
+        "ok": True,
+        "llm": type(service.llm).__name__,
+        "demo_mode": g.LIMITS.demo_mode,
+        "budget": g.budget.snapshot(),
+        "examples": list_examples(),
+        "max_material_chars": g.LIMITS.max_material_chars,
+    }
 
 
 @app.get("/api/materials")
@@ -93,14 +137,25 @@ def list_materials() -> list[dict[str, Any]]:
 
 
 @app.post("/api/materials")
-def ingest(body: IngestBody) -> dict[str, Any]:
-    """导入材料:理解 -> 建知识图谱 -> 规划路径。同一份材料只会处理一次。"""
+def ingest(body: IngestBody, request: Request) -> dict[str, Any]:
+    """导入材料:理解 -> 建知识图谱 -> 规划路径。同一份材料只会处理一次。
+
+    三种入口,优先级 example > path > text。path 在演示模式下会被拒绝——
+    否则任何人都能让服务端读取任意文件并把内容回显出来。
+    """
+    llm, before = _guard(request, g.ingest_limiter)
     try:
-        course = service.ingest_path(body.path) if body.path else service.ingest_text(
-            body.title, body.text
-        )
-    except (FileNotFoundError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if body.example:
+            course = service.ingest_path(example_path(body.example))
+        elif body.path:
+            course = service.ingest_path(g.resolve_material_path(body.path))
+        else:
+            text = g.validate_material_text(body.text)
+            course = service.ingest_text(body.title or "粘贴的材料", text)
+    except (g.MaterialRejected, KeyError, FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc).strip("'")) from exc
+    finally:
+        _spend(llm, before)
 
     return {
         "material_id": course.material.id,
@@ -119,7 +174,8 @@ def ingest(body: IngestBody) -> dict[str, Any]:
 
 
 @app.post("/api/sessions")
-def start_session(body: dict) -> dict[str, Any]:
+def start_session(body: dict, request: Request) -> dict[str, Any]:
+    _guard(request)
     material_id = body.get("material_id", "")
     try:
         tutor = service.start_session(material_id)
@@ -136,9 +192,11 @@ def _load(session_id: str):
 
 
 @app.get("/api/sessions/{session_id}/next")
-def next_step(session_id: str) -> dict[str, Any]:
+def next_step(session_id: str, request: Request) -> dict[str, Any]:
+    llm, before = _guard(request)
     tutor = _load(session_id)
     turn = tutor.next_step()
+    _spend(llm, before)
     service.persist(tutor)
     payload = _turn_payload(tutor, turn)
     payload["progress"] = _progress(tutor)
@@ -146,11 +204,13 @@ def next_step(session_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/sessions/{session_id}/answer")
-def submit_answer(session_id: str, body: AnswerBody) -> dict[str, Any]:
+def submit_answer(session_id: str, body: AnswerBody, request: Request) -> dict[str, Any]:
+    llm, before = _guard(request)
     tutor = _load(session_id)
     if tutor.session.pending is None:
         raise HTTPException(status_code=409, detail="当前没有待作答的题目")
-    turn = tutor.submit_answer(body.answer)
+    turn = tutor.submit_answer(body.answer[: g.LIMITS.max_material_chars])
+    _spend(llm, before)
     service.persist_turn(tutor, turn)
     grade = turn.grade
     return {
@@ -168,9 +228,14 @@ def submit_answer(session_id: str, body: AnswerBody) -> dict[str, Any]:
 
 
 @app.post("/api/sessions/{session_id}/ask")
-def ask(session_id: str, body: AskBody) -> dict[str, Any]:
+def ask(session_id: str, body: AskBody, request: Request) -> dict[str, Any]:
+    llm, before = _guard(request)
+    question = (body.question or "").strip()[:500]
+    if not question:
+        raise HTTPException(status_code=400, detail="问题不能为空")
     tutor = _load(session_id)
-    result = tutor.ask(body.question)
+    result = tutor.ask(question)
+    _spend(llm, before)
     return result.model_dump()
 
 

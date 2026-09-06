@@ -28,5 +28,37 @@ jobs:
         env:
           TUTOR_FAKE_LLM: "1"
         run: |
-          python -m tutor.cli --fake ingest examples/gradient_descent.md
-          python -m tutor.cli --fake eval examples/gradient_descent.md --ability 0.4
+          python -m tutor.cli --fake ingest gradient_descent
+          python -m tutor.cli --fake eval gradient_descent --ability 0.4
+
+      - name: 验证非编辑模式安装后资产仍在(Docker 里就是这么装的)
+        env:
+          TUTOR_FAKE_LLM: "1"
+          TUTOR_DEMO_MODE: "1"
+        run: |
+          pip install --force-reinstall --no-deps .
+          cd /tmp && python -c "
+          from fastapi.testclient import TestClient
+          from tutor.api import app
+          c = TestClient(app)
+          assert c.get('/').status_code == 200, '网页资产没被打包'
+          assert c.post('/api/materials', json={'example': 'gradient_descent'}).status_code == 200
+          assert c.post('/api/materials', json={'path': '/etc/hostname'}).status_code == 400
+          print('打包与演示模式护栏 OK')
+          "
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建镜像并冒烟
+        run: |
+          docker build -t agentedu:ci .
+          docker run -d --name tutor -p 8000:8000 -e TUTOR_FAKE_LLM=1 agentedu:ci
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/api/health && break || sleep 2
+          done
+          curl -sf http://127.0.0.1:8000/api/health | grep -q '"ok":true'
+          curl -sf http://127.0.0.1:8000/ | grep -q "自适应辅导"
+          docker logs tutor | tail -20
+          docker rm -f tutor

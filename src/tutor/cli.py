@@ -1,9 +1,9 @@
 """命令行入口。
 
-    python -m tutor.cli ingest examples/gradient_descent.md
-    python -m tutor.cli tutor  examples/gradient_descent.md
+    python -m tutor.cli ingest gradient_descent
+    python -m tutor.cli tutor  gradient_descent          # 也可以直接给一个文件路径
     python -m tutor.cli ask    <material_id> "学习率太大会怎样"
-    python -m tutor.cli eval   examples/gradient_descent.md --ability 0.5
+    python -m tutor.cli eval   gradient_descent --ability 0.5
     python -m tutor.cli serve
 
 加 --fake 可在无 API Key 的情况下跑完整流程(与 CI 走的是同一条路径)。
@@ -16,6 +16,7 @@ import sys
 import textwrap
 
 from .agent.orchestrator import Tutor
+from .examples import list_examples, resolve
 from .llm import build_llm
 from .memory.store import Store
 from .schemas import ActionType, ItemKind, Turn
@@ -44,7 +45,7 @@ def _service(args) -> TutorService:
 # --- 子命令 -------------------------------------------------------------
 def cmd_ingest(args) -> int:
     svc = _service(args)
-    course = svc.ingest_path(args.path)
+    course = svc.ingest_path(resolve(args.path))
     print(f"材料 id: {course.material.id}  片段数: {len(course.material.chunks)}")
     _hr()
     print("知识图谱:")
@@ -62,7 +63,7 @@ def cmd_ingest(args) -> int:
 
 def cmd_tutor(args) -> int:
     svc = _service(args)
-    course = svc.ingest_path(args.path)
+    course = svc.ingest_path(resolve(args.path))
     tutor = svc.start_session(course.material.id)
     print(f"会话 {tutor.session.session_id} 已开始。输入 :q 退出,:? 后跟问题可随时提问。")
     _hr("═")
@@ -112,7 +113,7 @@ def cmd_eval(args) -> int:
     from .evaluation.simulate import run_simulation, format_result
 
     svc = _service(args)
-    course = svc.ingest_path(args.path)
+    course = svc.ingest_path(resolve(args.path))
     result = run_simulation(svc.llm, course, ability=args.ability, seed=args.seed,
                             max_steps=args.max_steps)
     print(format_result(result))
@@ -218,12 +219,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true", help="打印 agent 内部日志")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    examples_help = "材料文件路径,或内置示例名(可用:" + "、".join(list_examples()) + ")"
+
     p = sub.add_parser("ingest", help="导入材料并生成知识图谱与学习路径")
-    p.add_argument("path")
+    p.add_argument("path", help=examples_help)
     p.set_defaults(func=cmd_ingest)
 
     p = sub.add_parser("tutor", help="开始一次交互式辅导")
-    p.add_argument("path")
+    p.add_argument("path", help=examples_help)
     p.set_defaults(func=cmd_tutor)
 
     p = sub.add_parser("ask", help="就已导入的材料提问")
@@ -232,7 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("eval", help="用模拟学生跑一遍,评估策略层")
-    p.add_argument("path")
+    p.add_argument("path", help=examples_help)
     p.add_argument("--ability", type=float, default=0.55, help="模拟学生的能力 0~1")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max-steps", type=int, default=80)

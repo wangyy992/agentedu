@@ -18,8 +18,18 @@ from .schemas import Material, SessionState
 class TutorService:
     def __init__(self, llm: LLMClient | None = None, store: Store | None = None) -> None:
         self.llm = llm or build_llm()
+        self._primary_llm = self.llm
         self.store = store or Store()
         self._courses: dict[str, Course] = {}   # 进程内缓存,避免重复建索引
+
+    def set_degraded(self, degraded: bool, fallback: LLMClient) -> LLMClient:
+        """每日预算用尽时切到离线兜底模型,恢复后切回主模型。
+
+        返回本次实际生效的模型对象——调用方要用它来记账,不能事后再读
+        self.llm:并发请求下那可能已经被另一个请求换掉了。
+        """
+        self.llm = fallback if degraded else self._primary_llm
+        return self.llm
 
     # -- 材料 -----------------------------------------------------------
     def ingest_path(self, path: str | Path) -> Course:

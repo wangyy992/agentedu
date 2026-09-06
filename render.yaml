@@ -1,0 +1,26 @@
+# Render 部署蓝图:仓库连上后自动读这个文件。
+# ANTHROPIC_API_KEY 需要在 Render 控制台里手动填(sync: false 表示不写进仓库)。
+services:
+  - type: web
+    name: agentedu-tutor
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter          # free 计划会休眠且无持久卷,演示够用但会掉会话
+    healthCheckPath: /api/health
+    disk:
+      name: tutor-data
+      mountPath: /data     # SQLite 落这里,跨重启保留
+      sizeGB: 1
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TUTOR_DEMO_MODE
+        value: "1"
+      - key: TUTOR_DAILY_LLM_CALL_BUDGET
+        value: "800"
+      - key: TUTOR_RATE_LIMIT_PER_MIN
+        value: "60"
+      - key: TUTOR_INGESTS_PER_HOUR
+        value: "5"
+      - key: TUTOR_MAX_MATERIAL_CHARS
+        value: "20000"

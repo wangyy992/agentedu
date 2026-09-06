@@ -24,6 +24,11 @@ tutor = "tutor.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# 网页界面和示例材料是运行时资产,必须随包分发,
+# 否则 `pip install .`(Docker 里的标准做法)之后网页会 404。
+[tool.setuptools.package-data]
+tutor = ["web/*.html", "examples/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

@@ -1,0 +1,38 @@
+# Fly.io 部署配置。先 `fly launch --no-deploy`,再:
+#   fly secrets set ANTHROPIC_API_KEY=sk-ant-...
+#   fly volumes create tutor_data --size 1
+#   fly deploy
+app = "agentedu-tutor"
+primary_region = "sin"          # 按自己所在区域改
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  TUTOR_DEMO_MODE = "1"
+  TUTOR_DAILY_LLM_CALL_BUDGET = "800"
+  TUTOR_RATE_LIMIT_PER_MIN = "60"
+  TUTOR_INGESTS_PER_HOUR = "5"
+  TUTOR_MAX_MATERIAL_CHARS = "20000"
+
+[[mounts]]
+  source = "tutor_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0      # 演示站没人访问时自动停,省钱
+
+  [http_service.checks]
+    [http_service.checks.health]
+      path = "/api/health"
+      interval = "30s"
+      timeout = "5s"
+
+# 单实例:SQLite 不支持多机共享写
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

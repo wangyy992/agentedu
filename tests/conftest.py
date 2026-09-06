@@ -17,7 +17,9 @@ def isolated_data_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def sample_text():
-    return (ROOT / "examples" / "gradient_descent.md").read_text(encoding="utf-8")
+    from tutor.examples import example_path
+
+    return example_path("gradient_descent").read_text(encoding="utf-8")
 
 
 @pytest.fixture

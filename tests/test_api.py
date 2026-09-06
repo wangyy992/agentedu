@@ -7,7 +7,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("TUTOR_FAKE_LLM", "1")
     import importlib
 
-    from tutor import api, config, service
+    from tutor import api, config, guardrails, service
     importlib.reload(config)
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.db")
     importlib.reload(service)
@@ -16,6 +16,9 @@ def client(tmp_path, monkeypatch):
     api.service = service.TutorService(
         llm=service.build_llm(force_fake=True), store=service.Store(tmp_path / "t.db")
     )
+    # 护栏是模块级单例,会跨测试累计。这里清零并放开上限,
+    # 让功能测试不受限流干扰;限流本身由 test_guardrails.py 专门覆盖。
+    guardrails.reset_all(requests_per_minute=0, ingests_per_hour=0, daily_llm_calls=0)
     return TestClient(api.app)
 
 
@@ -24,7 +27,7 @@ def test_health(client):
 
 
 def test_full_flow(client):
-    r = client.post("/api/materials", json={"path": "examples/gradient_descent.md"})
+    r = client.post("/api/materials", json={"example": "gradient_descent"})
     assert r.status_code == 200
     material = r.json()
     assert material["concepts"] and material["path"]
@@ -53,7 +56,7 @@ def test_full_flow(client):
 
 
 def test_answer_without_pending_item_is_409(client):
-    material = client.post("/api/materials", json={"path": "examples/gradient_descent.md"}).json()
+    material = client.post("/api/materials", json={"example": "gradient_descent"}).json()
     sid = client.post("/api/sessions", json={"material_id": material["material_id"]}).json()["session_id"]
     assert client.post(f"/api/sessions/{sid}/answer", json={"answer": "A"}).status_code == 409
 
@@ -63,12 +66,12 @@ def test_unknown_ids_are_404(client):
     assert client.get("/api/sessions/nope/next").status_code == 404
 
 
-def test_bad_path_is_400(client):
-    assert client.post("/api/materials", json={"path": "does/not/exist.md"}).status_code == 400
+def test_unknown_example_is_400(client):
+    assert client.post("/api/materials", json={"example": "nope"}).status_code == 400
 
 
 def test_ask_returns_verified_citations(client):
-    material = client.post("/api/materials", json={"path": "examples/gradient_descent.md"}).json()
+    material = client.post("/api/materials", json={"example": "gradient_descent"}).json()
     sid = client.post("/api/sessions", json={"material_id": material["material_id"]}).json()["session_id"]
     a = client.post(f"/api/sessions/{sid}/ask", json={"question": "学习率过大会怎样"}).json()
     assert a["citations"] and a["grounded"] is True

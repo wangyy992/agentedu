@@ -51,10 +51,10 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 
 # 看 agent 怎么读懂材料、怎么排学习路径
-python -m tutor.cli --fake ingest examples/gradient_descent.md
+python -m tutor.cli --fake ingest gradient_descent
 
 # 交互式辅导(输入 :? 加问题可随时提问,:q 退出)
-python -m tutor.cli --fake tutor examples/gradient_descent.md
+python -m tutor.cli --fake tutor gradient_descent
 
 # 网页界面
 python -m tutor.cli --fake serve      # → http://127.0.0.1:8000
@@ -64,7 +64,7 @@ python -m tutor.cli --fake serve      # → http://127.0.0.1:8000
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-python -m tutor.cli tutor examples/gradient_descent.md
+python -m tutor.cli tutor gradient_descent
 ```
 
 ---
@@ -152,7 +152,7 @@ P(答对) = c + (1-c) · sigmoid(1.7 · (θ - b))
 θ 是学生在该知识点上的真实能力(会随讲解和练习真的增长),b 是题目难度,c 是猜对概率。
 
 ```bash
-python -m tutor.cli --fake eval examples/gradient_descent.md --ability 0.3
+python -m tutor.cli --fake eval gradient_descent --ability 0.3
 ```
 
 跑一组不同能力的学生(离线模型,5 个知识点):
@@ -171,6 +171,65 @@ python -m tutor.cli --fake eval examples/gradient_descent.md --ability 0.3
 > **口径说明**:上表跑的是离线假模型。它的判分器按关键词命中率给分,比真实模型宽松,
 > 所以弱学生那一档的校准误差偏大(agent 高估了学生)。这个数字衡量的是**编排链路**,
 > 不是教学质量;要评教学质量得接真实模型跑。把这点写清楚比给一个好看的数字更重要。
+
+---
+
+## 部署
+
+已经准备好 `Dockerfile`、`render.yaml`、`fly.toml`。**公网部署前必须开演示模式**:
+
+```bash
+docker build -t agentedu .
+docker run -p 8000:8000 \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e TUTOR_DEMO_MODE=1 \
+  -e TUTOR_DAILY_LLM_CALL_BUDGET=800 \
+  -v tutor_data:/data \
+  agentedu
+```
+
+Render:仓库连上后自动读 `render.yaml`,只需在控制台填 `ANTHROPIC_API_KEY`。
+Fly.io:`fly launch --no-deploy` → `fly secrets set ANTHROPIC_API_KEY=...` →
+`fly volumes create tutor_data --size 1` → `fly deploy`。
+
+### 护栏(`guardrails.py`)
+
+一个会调用付费模型的公开端点,不设上限等于把钱包挂在网上。四层防护:
+
+| 环境变量 | 默认 | 作用 |
+|---|---|---|
+| `TUTOR_DEMO_MODE` | 关(Docker 内为开) | **禁用按服务器路径读材料**。见下方安全说明 |
+| `TUTOR_MAX_MATERIAL_CHARS` | 20000 | 材料长度直接决定每次调用的 token 数,必须封顶 |
+| `TUTOR_RATE_LIMIT_PER_MIN` | 60 | 按 IP 滑动窗口。一次教学循环 = `/next` + `/answer` 两个请求,人类手速远到不了,但足以挡脚本 |
+| `TUTOR_INGESTS_PER_HOUR` | 5 | 「导入新材料」单独卡死——它最贵(要读全文建知识图谱) |
+| `TUTOR_DAILY_LLM_CALL_BUDGET` | 0(不限) | 全局每日调用上限。**超额后自动降级到离线模型继续服务,而不是返回 500** |
+
+最后一条是有意的产品决策:演示站宁可内容质量下降,也不要看起来挂了。
+前端会显示「今日额度已用完,已降级」的提示,流程照常走完。
+
+### 一个必须说明的安全修复
+
+部署这一步做之前,`POST /api/materials {"path": "/etc/passwd"}` 会让服务端读取
+**任意文件**并把内容回显出来——未授权任意文件读取。本地 CLI 用没问题(是你自己的机器),
+公网部署就是漏洞。现在:
+
+- 演示模式下 HTTP 接口**完全不接受** `path`,只接受粘贴文本和内置示例名;
+- 非演示模式可用 `TUTOR_MATERIAL_ROOT` 指定白名单目录,先 `resolve()` 再比对,
+  挡住 `../` 穿越和符号链接;
+- 内置示例名不允许包含路径分隔符。
+
+回归用例在 `tests/test_guardrails.py`。
+
+### 运维注意
+
+- **必须单 worker**(Dockerfile 里写死了)。SQLite 多进程并发写会锁竞争,
+  课程索引也是进程内缓存。要横向扩容得先把存储换成 Postgres。
+- **挂持久卷到 `/data`**,否则容器重启会丢掉所有会话进度。
+- Fly 配置里 `min_machines_running = 0`,没人访问时自动停机省钱。
+
+> Dockerfile 本身没能在开发环境里构建验证(沙箱内没有 docker daemon)。
+> 但等价路径——非编辑模式 `pip install .` 后从无关目录启动——已验证通过:
+> 网页正常返回、内置示例可导入、演示模式正确拒绝路径读取、教学循环正常跑。
 
 ---
 
@@ -196,10 +255,13 @@ src/tutor/
 │   └── orchestrator.py    ★ 主循环状态机
 ├── memory/store.py        SQLite:会话快照 + 作答流水 + 错题本 + 跨会话误区统计
 ├── evaluation/simulate.py IRT 模拟学生 + 评测指标
+├── guardrails.py          ★ 公网部署护栏:限流、每日预算、材料长度、路径白名单
 ├── cli.py                 命令行
-└── api.py                 FastAPI + 静态页面
-web/index.html             单文件网页界面(无构建步骤)
-tests/                     76 个测试,全部离线运行
+├── api.py                 FastAPI + 静态页面
+├── web/index.html         单文件网页界面(无构建步骤,随包分发)
+└── examples/              内置示例材料(随包分发,`pip install .` 后仍可用)
+Dockerfile, render.yaml, fly.toml   部署配置
+tests/                     92 个测试,全部离线运行
 ```
 
 为什么检索用 BM25 而不是向量库:语料是**单份材料**(几十到几百个 chunk),BM25 召回
@@ -212,13 +274,16 @@ tests/                     76 个测试,全部离线运行
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/api/materials` | 导入材料 → 知识图谱 + 学习路径(按内容哈希去重,同一份材料只处理一次) |
+| `POST` | `/api/materials` | 导入材料 → 知识图谱 + 学习路径。接受 `text`(粘贴)或 `example`(内置示例名);`path` 仅非演示模式且在白名单目录内可用。按内容哈希去重 |
 | `POST` | `/api/sessions` | 开始一次辅导 |
 | `GET` | `/api/sessions/{id}/next` | 取下一步(讲解或一道题),带决策理由 |
 | `POST` | `/api/sessions/{id}/answer` | 提交作答 → 判分 + 掌握度更新 |
 | `POST` | `/api/sessions/{id}/ask` | 随时提问(tool-use + 引用核验) |
 | `GET` | `/api/sessions/{id}/report` | 结课报告 + 错题本 |
 | `GET` | `/api/sessions/{id}/state` | **调试用**:把 agent 内部状态整个吐出来,可以直接观察自适应是怎么决策的 |
+| `GET` | `/api/health` | 健康检查 + 当前生效的限额、今日预算用量、可用的内置示例 |
+
+超过限流返回 `429` 并带 `Retry-After` 头;材料过长 / 非法路径返回 `400`。
 
 状态全在服务端(SQLite),前端只持有 `session_id`,刷新页面不丢进度。
 
@@ -227,7 +292,7 @@ tests/                     76 个测试,全部离线运行
 ## 测试
 
 ```bash
-pytest            # 76 passed,全程离线,不需要 API Key
+pytest            # 92 passed,全程离线,不需要 API Key
 ```
 
 覆盖的关键性质:
@@ -238,7 +303,9 @@ pytest            # 76 passed,全程离线,不需要 API Key
 - **LLM 层**:用桩 client 测**真实的** `AnthropicLLM` —— 缓存块位置、JSON 校验失败后的
   修复重试、tool 循环回灌、工具异常不被吞掉、达到轮数上限能收口;
 - **端到端**:全对 / 全错都能终止、弱学生拿到更多练习、讲解先于考查、先修顺序不被违反、
-  题目引用的片段真实存在、全错时报告不撒谎。
+  题目引用的片段真实存在、全错时报告不撒谎;
+- **部署护栏**:任意文件读取被拒(回归用例)、`../` 穿越被挡、限流返回 429 带
+  `Retry-After`、预算耗尽时降级而非报错。
 
 ---
 
@@ -253,6 +320,8 @@ pytest            # 76 passed,全程离线,不需要 API Key
 - 真实模型的请求体结构已对照 SDK 的类型定义验证(`output_config.format`、
   `thinking.adaptive`、`cache_control.ttl`),但本仓库的开发环境没有 API Key,
   未跑过真实推理返回的端到端质量评估。
+- **单实例架构**。限流计数器和每日预算都在进程内存里,多实例部署会各算各的;
+  SQLite 也不支持多机共享写。要扩容需要把前者换 Redis、后者换 Postgres。
 
 ## 下一步
 
