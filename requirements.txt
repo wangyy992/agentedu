@@ -1,0 +1,8 @@
+anthropic>=1.0
+pydantic>=2.0
+fastapi>=0.110
+uvicorn>=0.27
+# 可选:解析 PDF 材料
+pypdf>=4.0
+# 开发
+pytest>=8.0

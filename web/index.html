@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 自适应辅导 Agent</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --line:#e3e6ea; --text:#1f2328; --muted:#6b7280;
+    --accent:#2f6feb; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --chip:#eef2f7;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3; --muted:#9198a1;
+           --accent:#4493f8; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --chip:#21262d; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+  header{padding:18px 24px;border-bottom:1px solid var(--line);background:var(--panel);
+         display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  header h1{font-size:17px;margin:0;font-weight:650}
+  header .sub{color:var(--muted);font-size:13px}
+  main{max-width:1120px;margin:0 auto;padding:22px;display:grid;
+       grid-template-columns:minmax(0,1fr) 300px;gap:22px}
+  @media (max-width:880px){ main{grid-template-columns:1fr} }
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:18px}
+  .card h2{font-size:14px;margin:0 0 12px;font-weight:650;color:var(--muted);
+           text-transform:uppercase;letter-spacing:.05em}
+  textarea,input[type=text]{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:7px;
+       background:var(--bg);color:var(--text);font:inherit;resize:vertical}
+  textarea{min-height:130px;font-size:14px}
+  button{padding:9px 16px;border:0;border-radius:7px;background:var(--accent);color:#fff;
+         font:inherit;font-weight:550;cursor:pointer}
+  button:disabled{opacity:.5;cursor:default}
+  button.ghost{background:var(--chip);color:var(--text);border:1px solid var(--line)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  .muted{color:var(--muted);font-size:13px}
+  .badge{display:inline-block;padding:2px 9px;border-radius:20px;background:var(--chip);
+         font-size:12px;color:var(--muted);margin-right:6px}
+  .badge.teach{background:#dbeafe;color:#1e40af}
+  .badge.practice{background:#dcfce7;color:#166534}
+  .badge.remediate{background:#fee2e2;color:#991b1b}
+  .badge.review{background:#fef3c7;color:#854d0e}
+  @media (prefers-color-scheme: dark){
+    .badge.teach{background:#1e3a8a33;color:#93c5fd} .badge.practice{background:#14532d33;color:#86efac}
+    .badge.remediate{background:#7f1d1d33;color:#fca5a5} .badge.review{background:#78350f33;color:#fcd34d}
+  }
+  .reason{font-size:13px;color:var(--muted);border-left:3px solid var(--line);padding:2px 0 2px 10px;margin:10px 0}
+  .content{white-space:pre-wrap}
+  .stem{font-weight:550;margin:14px 0 10px;white-space:pre-wrap}
+  .opt{display:block;padding:9px 12px;border:1px solid var(--line);border-radius:7px;margin-bottom:7px;
+       cursor:pointer;background:var(--bg)}
+  .opt:hover{border-color:var(--accent)}
+  .opt input{margin-right:8px}
+  .bar{height:6px;border-radius:3px;background:var(--chip);overflow:hidden}
+  .bar > i{display:block;height:100%;background:var(--accent);transition:width .35s}
+  .concept{margin-bottom:12px}
+  .concept .top{display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;gap:8px}
+  .concept.current .top{font-weight:650;color:var(--accent)}
+  .fb{margin-top:14px;padding:12px 14px;border-radius:8px;border:1px solid var(--line)}
+  .fb.correct{border-color:var(--ok)} .fb.partial{border-color:var(--warn)} .fb.incorrect{border-color:var(--bad)}
+  .fb .v{font-weight:650;margin-bottom:6px}
+  .fb.correct .v{color:var(--ok)} .fb.partial .v{color:var(--warn)} .fb.incorrect .v{color:var(--bad)}
+  code{background:var(--chip);padding:1px 5px;border-radius:4px;font-size:12px}
+  .hidden{display:none}
+  .cites{margin-top:10px;font-size:12px;color:var(--muted)}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid var(--line);
+        border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite;vertical-align:-2px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  ul{margin:6px 0;padding-left:20px}
+</style>
+</head>
+<body>
+<header>
+  <h1>AI 自适应辅导 Agent</h1>
+  <span class="sub">理解材料 → 规划路径 → 讲解 → 出题 → 判分 → 按掌握度调整下一步</span>
+  <span class="sub" id="llmKind"></span>
+</header>
+
+<main>
+<div>
+  <!-- 1. 导入材料 -->
+  <section class="card" id="ingestCard">
+    <h2>① 导入学习材料</h2>
+    <textarea id="materialText" placeholder="粘贴一段讲义 / 文章,或在下方填服务器上的文件路径(支持 .md .txt .html .pdf)"></textarea>
+    <div class="row">
+      <input type="text" id="materialPath" placeholder="examples/gradient_descent.md" style="flex:1;min-width:220px">
+      <button id="btnIngest">解析材料</button>
+      <span class="muted" id="ingestMsg"></span>
+    </div>
+  </section>
+
+  <!-- 2. 知识图谱与路径 -->
+  <section class="card hidden" id="planCard">
+    <h2>② 知识图谱与学习路径</h2>
+    <div id="planBody"></div>
+    <div class="row"><button id="btnStart">开始学习</button></div>
+  </section>
+
+  <!-- 3. 教学主区 -->
+  <section class="card hidden" id="turnCard">
+    <h2>③ 辅导中</h2>
+    <div id="turnBody"></div>
+  </section>
+
+  <!-- 4. 答疑 -->
+  <section class="card hidden" id="askCard">
+    <h2>随时提问(agent 会自己检索材料并给出带引用的回答)</h2>
+    <div class="row">
+      <input type="text" id="askInput" placeholder="例如:学习率太大和太小分别会怎样?" style="flex:1;min-width:240px">
+      <button id="btnAsk" class="ghost">提问</button>
+    </div>
+    <div id="askBody"></div>
+  </section>
+</div>
+
+<!-- 侧栏:掌握度 -->
+<aside>
+  <section class="card hidden" id="progressCard">
+    <h2>掌握度</h2>
+    <div id="progressBody"></div>
+  </section>
+  <section class="card hidden" id="reportCard">
+    <h2>结课报告</h2>
+    <div id="reportBody"></div>
+  </section>
+</aside>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let materialId = null, sessionId = null, currentTurn = null;
+
+async function api(path, opts){
+  const r = await fetch(path, Object.assign({headers:{'Content-Type':'application/json'}}, opts||{}));
+  const body = await r.json().catch(()=>({detail:'响应不是合法 JSON'}));
+  if(!r.ok) throw new Error(body.detail || ('HTTP ' + r.status));
+  return body;
+}
+const esc = s => (s==null?'':String(s)).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const busy = (el, on, label) => { el.disabled = on; el.innerHTML = on ? '<span class="spin"></span> 处理中' : label; };
+
+fetch('/api/health').then(r=>r.json()).then(d=>{
+  $('#llmKind').textContent = d.llm === 'FakeLLM' ? '· 当前为离线假模型(无 API Key)' : '· 已接入 Claude';
+}).catch(()=>{});
+
+// ① 解析材料
+$('#btnIngest').onclick = async () => {
+  const text = $('#materialText').value.trim(), path = $('#materialPath').value.trim();
+  if(!text && !path){ $('#ingestMsg').textContent = '请粘贴内容或填写路径'; return; }
+  busy($('#btnIngest'), true);
+  $('#ingestMsg').textContent = '正在理解材料并建立知识图谱…';
+  try{
+    const d = await api('/api/materials', {method:'POST',
+      body: JSON.stringify({text, path, title: path ? path.split('/').pop() : '粘贴的材料'})});
+    materialId = d.material_id;
+    $('#ingestMsg').textContent = `已解析:${d.chunks} 个片段,${d.concepts.length} 个知识点`;
+    renderPlan(d);
+  }catch(e){ $('#ingestMsg').textContent = '失败:' + e.message; }
+  busy($('#btnIngest'), false, '解析材料');
+};
+
+function renderPlan(d){
+  const byId = Object.fromEntries(d.concepts.map(c=>[c.id,c]));
+  $('#planBody').innerHTML =
+    `<div class="muted">${esc(d.rationale)}</div>` +
+    d.path.map((id,i)=>{
+      const c = byId[id]; if(!c) return '';
+      const pre = c.prerequisites.length
+        ? `<span class="muted">先修:${c.prerequisites.map(p=>esc((byId[p]||{}).name||p)).join('、')}</span>` : '';
+      return `<div class="concept"><div class="top"><span>${i+1}. ${esc(c.name)}</span>
+        <span class="muted">难度 ${c.difficulty}/5</span></div>
+        <div class="muted">${esc(c.summary)} ${pre}</div></div>`;
+    }).join('');
+  $('#planCard').classList.remove('hidden');
+}
+
+// ② 开始学习
+$('#btnStart').onclick = async () => {
+  busy($('#btnStart'), true);
+  try{
+    const d = await api('/api/sessions', {method:'POST', body: JSON.stringify({material_id: materialId})});
+    sessionId = d.session_id;
+    $('#turnCard').classList.remove('hidden');
+    $('#askCard').classList.remove('hidden');
+    $('#progressCard').classList.remove('hidden');
+    renderProgress(d.progress);
+    await nextStep();
+  }catch(e){ alert('开始失败:' + e.message); }
+  busy($('#btnStart'), false, '开始学习');
+};
+
+async function nextStep(){
+  $('#turnBody').innerHTML = '<span class="spin"></span> agent 正在决定下一步…';
+  try{
+    const t = await api(`/api/sessions/${sessionId}/next`);
+    currentTurn = t;
+    if(t.progress) renderProgress(t.progress);
+    if(t.action === 'complete'){ await renderReport(t); return; }
+    renderTurn(t);
+  }catch(e){ $('#turnBody').innerHTML = `<div class="fb incorrect">出错:${esc(e.message)}</div>`; }
+}
+
+const LABEL = {teach:'讲解', practice:'练习', remediate:'针对性补救', review:'间隔复习'};
+
+function renderTurn(t){
+  let html = `<span class="badge ${t.action}">${LABEL[t.action]||t.action}</span>`;
+  if(t.concept) html += `<span class="badge">${esc(t.concept.name)}</span>`;
+  if(t.item) html += `<span class="badge">难度 ${t.item.difficulty}/5</span>`;
+  html += `<div class="reason">决策依据:${esc(t.reason)}</div>`;
+  if(t.content) html += `<div class="content">${esc(t.content)}</div>`;
+  if(t.citations && t.citations.length)
+    html += `<div class="cites">材料依据:${t.citations.map(c=>`<code>${esc(c)}</code>`).join(' ')}</div>`;
+
+  if(t.item){
+    html += `<div class="stem">${esc(t.item.stem)}</div>`;
+    if(t.item.kind === 'mcq'){
+      html += t.item.options.map((o,i)=>{
+        const letter = String.fromCharCode(65+i);
+        return `<label class="opt"><input type="radio" name="opt" value="${letter}">${esc(o)}</label>`;
+      }).join('');
+    }else{
+      html += `<textarea id="answerInput" placeholder="用自己的话回答;不确定也可以写下思路"></textarea>`;
+    }
+    html += `<div class="row"><button id="btnSubmit">提交</button>
+             <span class="muted">依据片段:${(t.item.source_chunk_ids||[]).map(c=>`<code>${esc(c)}</code>`).join(' ')}</span></div>`;
+  }else{
+    html += `<div class="row"><button id="btnContinue">继续</button></div>`;
+  }
+  $('#turnBody').innerHTML = html;
+  const sub = $('#btnSubmit'), cont = $('#btnContinue');
+  if(sub) sub.onclick = submitAnswer;
+  if(cont) cont.onclick = nextStep;
+}
+
+async function submitAnswer(){
+  let answer = '';
+  const picked = document.querySelector('input[name=opt]:checked');
+  if(picked) answer = picked.value;
+  else if($('#answerInput')) answer = $('#answerInput').value.trim();
+  if(!answer && !confirm('还没作答,确定要交白卷吗?')) return;
+
+  busy($('#btnSubmit'), true);
+  try{
+    const g = await api(`/api/sessions/${sessionId}/answer`, {method:'POST', body: JSON.stringify({answer})});
+    renderProgress(g.progress);
+    const V = {correct:'✓ 正确', partial:'~ 部分正确', incorrect:'✗ 错误'};
+    let html = `<div class="fb ${g.verdict}"><div class="v">${V[g.verdict]} · 得分 ${Math.round(g.score*100)}%
+        · 该知识点掌握度 ${Math.round(g.mastery*100)}%</div>
+        <div class="content">${esc(g.feedback)}</div>`;
+    if(g.missing_points && g.missing_points.length)
+      html += `<div class="muted">还缺:${g.missing_points.map(esc).join('、')}</div>`;
+    if(g.misconception_tags && g.misconception_tags.length)
+      html += `<div class="muted">已记录误区:${g.misconception_tags.map(t=>`<code>${esc(t)}</code>`).join(' ')}
+               —— 后续会针对它补讲和加练</div>`;
+    if(g.verdict !== 'correct'){
+      if(g.hint) html += `<div class="muted">提示:${esc(g.hint)}</div>`;
+      if(g.answer_key) html += `<div class="muted">参考答案:${esc(g.answer_key)}</div>`;
+      if(g.rationale) html += `<div class="muted">${esc(g.rationale)}</div>`;
+    }
+    html += `</div><div class="row"><button id="btnNext">下一步</button></div>`;
+    $('#turnBody').insertAdjacentHTML('beforeend', html);
+    $('#btnSubmit').disabled = true;
+    $('#btnNext').onclick = nextStep;
+  }catch(e){
+    alert('提交失败:' + e.message);
+    busy($('#btnSubmit'), false, '提交');
+  }
+}
+
+function renderProgress(list){
+  $('#progressBody').innerHTML = (list||[]).map(c=>`
+    <div class="concept ${c.current?'current':''}">
+      <div class="top"><span>${esc(c.name)}</span><span>${Math.round(c.mastery*100)}%</span></div>
+      <div class="bar"><i style="width:${Math.round(c.mastery*100)}%"></i></div>
+      <div class="muted" style="font-size:12px">已答 ${c.attempts} 题</div>
+    </div>`).join('');
+}
+
+async function renderReport(t){
+  $('#turnBody').innerHTML = `<span class="badge">已完成</span><div class="content">${esc(t.content)}</div>`;
+  try{
+    const r = await api(`/api/sessions/${sessionId}/report`);
+    let html = `<div>整体掌握度 <b>${Math.round(r.overall*100)}%</b></div>
+      <div class="bar" style="margin:8px 0"><i style="width:${Math.round(r.overall*100)}%"></i></div>
+      <div class="muted">已掌握:${r.mastered.map(esc).join('、')||'无'}</div>
+      <div class="muted">待巩固:${r.shaky.map(esc).join('、')||'无'}</div>`;
+    if(r.top_misconceptions.length)
+      html += `<div class="muted">高频误区:<ul>${r.top_misconceptions
+        .map(m=>`<li>${esc(m.tag)} ×${m.count}</li>`).join('')}</ul></div>`;
+    if(r.wrong_items && r.wrong_items.length)
+      html += `<div class="muted">错题 ${r.wrong_items.length} 道已存入错题本</div>`;
+    $('#reportBody').innerHTML = html;
+    $('#reportCard').classList.remove('hidden');
+  }catch(e){ /* 报告失败不影响主流程 */ }
+}
+
+// 答疑
+$('#btnAsk').onclick = async () => {
+  const q = $('#askInput').value.trim();
+  if(!q) return;
+  busy($('#btnAsk'), true);
+  $('#askBody').innerHTML = '<span class="spin"></span> agent 正在检索材料…';
+  try{
+    const a = await api(`/api/sessions/${sessionId}/ask`, {method:'POST', body: JSON.stringify({question:q})});
+    $('#askBody').innerHTML = `<div class="fb ${a.grounded?'correct':'partial'}">
+      <div class="content">${esc(a.answer)}</div>
+      <div class="cites">检索关键词:${(a.used_searches||[]).map(s=>`<code>${esc(s)}</code>`).join(' ')||'—'}
+      &nbsp;|&nbsp; 已核验引用:${(a.citations||[]).map(c=>`<code>${esc(c)}</code>`).join(' ')||'无(回答未溯源到材料)'}</div></div>`;
+  }catch(e){ $('#askBody').innerHTML = `<div class="fb incorrect">提问失败:${esc(e.message)}</div>`; }
+  busy($('#btnAsk'), false, '提问');
+};
+$('#askInput').addEventListener('keydown', e => { if(e.key === 'Enter') $('#btnAsk').click(); });
+</script>
+</body>
+</html>
