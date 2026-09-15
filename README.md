@@ -60,12 +60,22 @@ python -m tutor.cli --fake tutor gradient_descent
 python -m tutor.cli --fake serve      # → http://127.0.0.1:8000
 ```
 
-接真实模型只要去掉 `--fake` 并设置 Key:
+接真实模型只要去掉 `--fake` 并配好 Key。两种方式,任选其一:
 
 ```bash
+# 方式一:复制模板改一下(推荐,.env 已在 .gitignore 里,不会被提交)
+cp .env.example .env
+#   编辑 .env,填入 ANTHROPIC_API_KEY=sk-ant-...
+
+# 方式二:直接设环境变量(临时,关掉终端就没了)
 export ANTHROPIC_API_KEY=sk-ant-...
+
 python -m tutor.cli tutor gradient_descent
 ```
+
+真实环境变量优先于 `.env`,所以 Docker / CI 里传进来的值不会被文件覆盖。
+**永远不要把 key 写进代码或提交进 git** —— 一旦推上 GitHub,即使事后删掉,
+它仍然留在提交历史里,必须去供应商后台吊销重发。
 
 ---
 
@@ -261,7 +271,7 @@ src/tutor/
 ├── web/index.html         单文件网页界面(无构建步骤,随包分发)
 └── examples/              内置示例材料(随包分发,`pip install .` 后仍可用)
 Dockerfile, render.yaml, fly.toml   部署配置
-tests/                     92 个测试,全部离线运行
+tests/                     96 个测试,全部离线运行
 ```
 
 为什么检索用 BM25 而不是向量库:语料是**单份材料**(几十到几百个 chunk),BM25 召回
@@ -292,7 +302,7 @@ tests/                     92 个测试,全部离线运行
 ## 测试
 
 ```bash
-pytest            # 92 passed,全程离线,不需要 API Key
+pytest            # 96 passed,全程离线,不需要 API Key
 ```
 
 覆盖的关键性质:

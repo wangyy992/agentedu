@@ -8,6 +8,42 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+
+# --- .env 加载 ----------------------------------------------------------
+def _load_dotenv() -> None:
+    """从项目根目录的 .env 读取配置(如 ANTHROPIC_API_KEY)。
+
+    自己实现而不是引入 python-dotenv:只有十几行,省一个依赖,
+    也和这个项目「能不加依赖就不加」的取向一致(检索也是同样的理由用了 BM25)。
+
+    真实环境变量优先于 .env——这样 Docker / CI 里传进来的值不会被文件覆盖。
+    必须在本模块读取任何环境变量之前调用。
+    """
+    for base in (Path.cwd(), Path(__file__).resolve().parents[2]):
+        env_file = base / ".env"
+        if not env_file.is_file():
+            continue
+        try:
+            lines = env_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):]
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
+        return
+
+
+_load_dotenv()
+
+
 # --- 模型 ---------------------------------------------------------------
 MODEL = os.getenv("TUTOR_MODEL", "claude-opus-5")
 
