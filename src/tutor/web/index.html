@@ -286,7 +286,10 @@ async function submitAnswer(){
     }
     html += `</div><div class="row"><button id="btnNext">下一步</button></div>`;
     $('#turnBody').insertAdjacentHTML('beforeend', html);
+    // busy() 把按钮内容换成了转圈,这里必须还原,否则它会永远停在「处理中」像卡死
+    busy($('#btnSubmit'), false, '已提交');
     $('#btnSubmit').disabled = true;
+    document.querySelectorAll('.opt input').forEach(i => { i.disabled = true; });
     $('#btnNext').onclick = nextStep;
   }catch(e){
     alert('提交失败:' + e.message);
