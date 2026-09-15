@@ -47,6 +47,11 @@
 逻辑可以完全离线跑通和测试(CI 用的就是它)。
 
 ```bash
+# 一键配置(建虚拟环境、装依赖、引导填 API Key、自检)
+bash scripts/setup.sh
+source .venv/bin/activate
+
+# 或者手动来
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 
